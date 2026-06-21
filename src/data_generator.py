@@ -1,6 +1,4 @@
 """
-data_generator.py
------------------
 Generates synthetic multi-sensor time-series data for three marine vessels.
 Sensors modelled: engine RPM, coolant temperature, exhaust gas temperature,
 fuel consumption rate, vibration (RMS), lube-oil pressure, and vessel speed.
@@ -18,7 +16,7 @@ from pathlib import Path
 
 RNG = np.random.default_rng(42)
 
-# ── config ────────────────────────────────────────────────────────────────────
+# config
 VESSELS        = ["VS_Haida_Gwaii", "VS_Spirit_Sound", "VS_Pacific_Wren"]
 DAYS           = 90          # simulation window
 SAMPLE_MIN     = 10          # minutes between readings
@@ -41,11 +39,10 @@ def _timestamps(days: int, freq_min: int) -> pd.DatetimeIndex:
     return pd.date_range("2025-01-01", periods=days * 24 * 60 // freq_min,
                          freq=f"{freq_min}min")
 
-
+# Generate correlated normal-operation signals for n timesteps
 def _base_signals(n: int) -> dict:
-    """Generate correlated normal-operation signals for n timesteps."""
-    rpm        = RNG.normal(*NORMAL["rpm"],          n).clip(350, 950)
-    rpm_norm   = (rpm - NORMAL["rpm"][0]) / NORMAL["rpm"][0]
+    rpm = RNG.normal(*NORMAL["rpm"], n).clip(350, 950)
+    rpm_norm = (rpm - NORMAL["rpm"][0]) / NORMAL["rpm"][0]
 
     # fuel and speed loosely correlated with RPM
     fuel = NORMAL["fuel_lph"][0] + rpm_norm * 40 + RNG.normal(0, NORMAL["fuel_lph"][1], n)
@@ -54,45 +51,49 @@ def _base_signals(n: int) -> dict:
     return {
         "rpm"          : rpm,
         "coolant_temp" : RNG.normal(*NORMAL["coolant_temp"], n).clip(60, 105),
-        "egt"          : RNG.normal(*NORMAL["egt"],          n).clip(250, 550),
+        "egt"          : RNG.normal(*NORMAL["egt"], n).clip(250, 550),
         "fuel_lph"     : fuel.clip(40, 200),
-        "vibration"    : RNG.normal(*NORMAL["vibration"],    n).clip(0.3, 6.0),
+        "vibration"    : RNG.normal(*NORMAL["vibration"], n).clip(0.3, 6.0),
         "oil_pressure" : RNG.normal(*NORMAL["oil_pressure"], n).clip(2.0, 8.0),
         "speed_kn"     : speed.clip(0, 22),
     }
 
-
+# Mark fault windows and distort the relevant signals
 def _inject_faults(df: pd.DataFrame) -> pd.DataFrame:
-    """Mark fault windows and distort the relevant signals."""
     df = df.copy()
     df["fault_label"] = 0
 
     n = len(df)
     steps_per_day = 24 * 60 // SAMPLE_MIN
     i = 0
+    
     while i < n:
         if RNG.random() < FAULT_PROB:
-            fault_type = RNG.integers(1, 4)   # 1, 2, or 3
+            fault_type = RNG.integers(1, 4) # 1, 2, or 3
             dur_steps  = int(RNG.integers(*[h * 60 // SAMPLE_MIN for h in FAULT_LEN_H]))
             end = min(i + dur_steps, n)
             window = slice(i, end)
             t = np.linspace(0, 1, end - i)
 
-            if fault_type == 1:          # cooling failure – temp rises then plateaus
+            # cooling failure -> temp rises then plateaus
+            if fault_type == 1:          
                 df.loc[df.index[window], "coolant_temp"] += (t ** 0.5) * RNG.uniform(15, 35)
                 df.loc[df.index[window], "egt"]          += t * RNG.uniform(30, 80)
 
-            elif fault_type == 2:        # fuel degradation – consumption creeps up
+            # fuel degradation –> consumption creeps up
+            elif fault_type == 2:        
                 df.loc[df.index[window], "fuel_lph"] += t * RNG.uniform(20, 60)
                 df.loc[df.index[window], "speed_kn"] -= t * RNG.uniform(1, 4)
 
-            elif fault_type == 3:        # bearing wear – vibration spikes, RPM noise
+            # bearing wear –> vibration spikes, RPM noise
+            elif fault_type == 3:        
                 df.loc[df.index[window], "vibration"] += t * RNG.uniform(1.5, 4.0)
                 noise = RNG.normal(0, 40, end - i) * t
                 df.loc[df.index[window], "rpm"] += noise
 
             df.loc[df.index[window], "fault_label"] = fault_type
             i = end + steps_per_day      # gap before next fault
+        
         else:
             i += steps_per_day
 
@@ -104,15 +105,12 @@ def _inject_faults(df: pd.DataFrame) -> pd.DataFrame:
     df["rpm"]          = df["rpm"].clip(200, 1100)
     return df
 
+"""
+Generate sensor data for all vessels and save to CSV.
 
+Returns: pd.DataFrame, a combined dataframe with a 'vessel_id' column
+"""
 def generate(output_dir: str | Path = "data") -> pd.DataFrame:
-    """
-    Generate sensor data for all vessels and save to CSV.
-
-    Returns
-    -------
-    pd.DataFrame  – combined dataframe with a 'vessel_id' column
-    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
